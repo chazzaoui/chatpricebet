@@ -24,11 +24,19 @@ export function ChatInterface({
 
   const { conversations, isLoading: conversationsLoading } =
     useConversations();
-  const {
-    messages,
-    sendMessage,
-    isLoading: messagesLoading,
-  } = useMessages(selectedConversation || undefined);
+  
+  // useMessages hook - safely handle null/undefined
+  let messagesResult;
+  try {
+    messagesResult = useMessages(selectedConversation);
+  } catch (error) {
+    // Fallback if hook doesn't handle null
+    messagesResult = { messages: [], sendMessage: async () => {}, isLoading: false };
+  }
+  
+  const messages = messagesResult?.messages || [];
+  const sendMessage = messagesResult?.sendMessage || (async () => {});
+  const messagesLoading = messagesResult?.isLoading || false;
 
   useEffect(() => {
     if (!client && address && !isInitializing) {

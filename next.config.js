@@ -8,15 +8,25 @@ const nextConfig = {
       net: false,
       tls: false,
       'node-localstorage/register': false,
+      '@react-native-async-storage/async-storage': false,
+      'pino-pretty': false,
     };
     
-    // Ignore node-localstorage in client-side builds
+    // Ignore problematic modules in client-side builds
     if (!isServer) {
       config.resolve.alias = {
         ...config.resolve.alias,
         'node-localstorage/register': false,
+        '@react-native-async-storage/async-storage': false,
+        'pino-pretty': false,
       };
     }
+    
+    // Ignore WASM files that cause issues
+    config.experiments = {
+      ...config.experiments,
+      asyncWebAssembly: false,
+    };
     
     return config;
   },
