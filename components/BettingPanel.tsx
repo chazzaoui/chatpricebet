@@ -37,6 +37,7 @@ export function BettingPanel({
   const [selectedBetId, setSelectedBetId] = useState<bigint | null>(
     null
   );
+  const [showSuccess, setShowSuccess] = useState(false);
 
   // Update prediction when initialPrediction changes
   useEffect(() => {
@@ -74,8 +75,23 @@ export function BettingPanel({
       hash,
     });
 
+  // Show success message when transaction succeeds
+  useEffect(() => {
+    if (isSuccess) {
+      setShowSuccess(true);
+      // Auto-hide after 10 seconds
+      const timer = setTimeout(() => {
+        setShowSuccess(false);
+      }, 10000);
+      return () => clearTimeout(timer);
+    }
+  }, [isSuccess]);
+
   const handlePlaceBet = async () => {
     if (!prediction || !betAmount || !isConnected) return;
+
+    // Hide previous success message when placing new bet
+    setShowSuccess(false);
 
     try {
       writeContract({
@@ -198,16 +214,31 @@ export function BettingPanel({
           )}
         </button>
 
-        {isSuccess && (
-          <div className="mt-4 bg-green-500/20 border border-green-500 rounded-lg p-4 flex items-center gap-2 text-green-300">
-            <CheckCircle className="w-5 h-5" />
-            <span>Bet placed successfully!</span>
+        {showSuccess && isSuccess && hash && (
+          <div className="mt-4 bg-green-500/20 border border-green-500 rounded-lg p-4 flex flex-col gap-2 text-green-300">
+            <div className="flex items-center gap-2">
+              <CheckCircle className="w-5 h-5" />
+              <span className="font-semibold">
+                Bet placed successfully!
+              </span>
+            </div>
+            <a
+              href={`https://sepolia.etherscan.io/tx/${hash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-green-400 hover:text-green-300 text-sm underline"
+            >
+              View on Etherscan →
+            </a>
           </div>
         )}
 
         {error && (
           <div className="mt-4 bg-red-500/20 border border-red-500 rounded-lg p-4 text-red-300">
-            Error: {error.message}
+            <div className="font-semibold mb-1">
+              Error placing bet:
+            </div>
+            <div className="text-sm">{error.message}</div>
           </div>
         )}
       </div>
@@ -220,7 +251,11 @@ export function BettingPanel({
           </h2>
           <div className="space-y-3">
             {userBets.map((betId: bigint) => (
-              <BetCard key={betId.toString()} betId={betId} />
+              <BetCard
+                key={betId.toString()}
+                isPending
+                betId={betId}
+              />
             ))}
           </div>
         </div>
@@ -229,7 +264,13 @@ export function BettingPanel({
   );
 }
 
-function BetCard({ betId }: { betId: bigint }) {
+function BetCard({
+  betId,
+  isPending,
+}: {
+  betId: bigint;
+  isPending: boolean;
+}) {
   const { data: bet } = useReadContract({
     address: CONTRACT_ADDRESS,
     abi: PriceBetABI,
@@ -238,8 +279,6 @@ function BetCard({ betId }: { betId: bigint }) {
   });
 
   if (!bet) return null;
-
-  const { writeContract, isPending } = useWriteContract();
 
   return (
     <div className="bg-white/5 rounded-lg p-4 border border-white/10">
