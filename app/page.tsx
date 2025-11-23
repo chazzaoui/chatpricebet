@@ -2,7 +2,7 @@
 
 import { useAccount } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { ChatInterface } from '@/components/ChatInterface';
 import { BettingPanel } from '@/components/BettingPanel';
 import { useXMTP } from '@/hooks/useXMTP';
@@ -12,6 +12,41 @@ export default function Home() {
   const { isConnected } = useAccount();
   const { client, initClient } = useXMTP();
   const [activeTab, setActiveTab] = useState<'chat' | 'bet'>('chat');
+  const [initialPrediction, setInitialPrediction] = useState<
+    boolean | null
+  >(null);
+
+  // Handle hash navigation and custom events for betting from chat
+  useEffect(() => {
+    const handleHashChange = () => {
+      if (window.location.hash === '#bet') {
+        setActiveTab('bet');
+        window.location.hash = '';
+      }
+    };
+
+    const handleSwitchToBet = (event: Event) => {
+      const customEvent = event as CustomEvent;
+      setActiveTab('bet');
+      if (customEvent.detail?.prediction !== undefined) {
+        setInitialPrediction(customEvent.detail.prediction);
+      }
+    };
+
+    // Check hash on mount
+    handleHashChange();
+
+    // Listen for hash changes
+    window.addEventListener('hashchange', handleHashChange);
+
+    // Listen for custom event
+    window.addEventListener('switchToBet', handleSwitchToBet);
+
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange);
+      window.removeEventListener('switchToBet', handleSwitchToBet);
+    };
+  }, []);
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900">
@@ -75,7 +110,10 @@ export default function Home() {
                   initClient={initClient}
                 />
               ) : (
-                <BettingPanel />
+                <BettingPanel
+                  initialPrediction={initialPrediction}
+                  onPredictionSet={() => setInitialPrediction(null)}
+                />
               )}
             </div>
           </>

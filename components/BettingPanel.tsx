@@ -20,13 +20,36 @@ import { usePythPrice } from '@/hooks/usePythPrice';
 const CONTRACT_ADDRESS = (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ||
   '0x0000000000000000000000000000000000000000') as `0x${string}`;
 
-export function BettingPanel() {
+interface BettingPanelProps {
+  initialPrediction?: boolean | null;
+  onPredictionSet?: () => void;
+}
+
+export function BettingPanel({
+  initialPrediction = null,
+  onPredictionSet,
+}: BettingPanelProps) {
   const { address, isConnected } = useAccount();
   const [betAmount, setBetAmount] = useState('0.001');
-  const [prediction, setPrediction] = useState<boolean | null>(null);
+  const [prediction, setPrediction] = useState<boolean | null>(
+    initialPrediction ?? null
+  );
   const [selectedBetId, setSelectedBetId] = useState<bigint | null>(
     null
   );
+
+  // Update prediction when initialPrediction changes
+  useEffect(() => {
+    if (
+      initialPrediction !== undefined &&
+      initialPrediction !== null
+    ) {
+      setPrediction(initialPrediction);
+      if (onPredictionSet) {
+        onPredictionSet();
+      }
+    }
+  }, [initialPrediction, onPredictionSet]);
 
   const { currentPrice, isLoading: priceLoading } = usePythPrice();
 
