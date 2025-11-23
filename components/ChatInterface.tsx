@@ -11,39 +11,53 @@ interface ChatInterfaceProps {
   initClient: () => Promise<void>;
 }
 
+// Placeholder conversation to prevent hook errors when none is selected
+const PLACEHOLDER_CONVERSATION = {
+  topic: '__placeholder__',
+  peerAddress: '0x0000000000000000000000000000000000000000',
+} as any;
+
 export function ChatInterface({
   client,
   initClient,
 }: ChatInterfaceProps) {
   const { address } = useAccount();
-  const [isInitializing, setIsInitializing] = useState(false);
   const [selectedConversation, setSelectedConversation] =
-    useState<any>(null);
+    useState<any>(undefined);
   const [messageText, setMessageText] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const initAttemptedRef = useRef(false);
 
   const { conversations, isLoading: conversationsLoading } =
     useConversations();
-  
-  // useMessages hook - safely handle null/undefined
-  let messagesResult;
-  try {
-    messagesResult = useMessages(selectedConversation);
-  } catch (error) {
-    // Fallback if hook doesn't handle null
-    messagesResult = { messages: [], sendMessage: async () => {}, isLoading: false };
-  }
-  
-  const messages = messagesResult?.messages || [];
-  const sendMessage = messagesResult?.sendMessage || (async () => {});
-  const messagesLoading = messagesResult?.isLoading || false;
 
+  // useMessages hook - must be called unconditionally per React rules
+  // Use placeholder if no conversation is selected to prevent hook from crashing
+  const conversationForHook =
+    selectedConversation || PLACEHOLDER_CONVERSATION;
+  const messagesHook = useMessages(conversationForHook);
+
+  // Only use messages if a real conversation is selected
+  const messages = selectedConversation
+    ? messagesHook?.messages || []
+    : [];
+  const sendMessage = selectedConversation
+    ? messagesHook?.sendMessage || (async () => {})
+    : async () => {};
+  const messagesLoading = selectedConversation
+    ? messagesHook?.isLoading || false
+    : false;
+
+  // Initialize XMTP client only once when wallet is connected
   useEffect(() => {
-    if (!client && address && !isInitializing) {
-      setIsInitializing(true);
-      initClient().finally(() => setIsInitializing(false));
+    if (!client && address && !initAttemptedRef.current) {
+      initAttemptedRef.current = true;
+      initClient().catch((error) => {
+        console.error('Failed to initialize XMTP:', error);
+        initAttemptedRef.current = false; // Allow retry on error
+      });
     }
-  }, [client, address, initClient, isInitializing]);
+  }, [client, address, initClient]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -63,14 +77,13 @@ export function ChatInterface({
   if (!client) {
     return (
       <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8 text-center">
-        {isInitializing ? (
-          <div className="flex items-center justify-center gap-3 text-white">
-            <Loader2 className="w-5 h-5 animate-spin" />
-            <p>Initializing XMTP client...</p>
-          </div>
-        ) : (
-          <p className="text-white">XMTP client not initialized</p>
-        )}
+        <div className="flex items-center justify-center gap-3 text-white">
+          <Loader2 className="w-5 h-5 animate-spin" />
+          <p>Initializing XMTP client...</p>
+        </div>
+        <p className="text-white/60 text-sm mt-4">
+          Make sure XMTP is enabled for your wallet address
+        </p>
       </div>
     );
   }
@@ -96,7 +109,8 @@ export function ChatInterface({
                   key={conv.topic}
                   onClick={() => setSelectedConversation(conv)}
                   className={`w-full text-left p-3 rounded-lg transition-all ${
-                    selectedConversation?.topic === conv.topic
+                    selectedConversation &&
+                    selectedConversation.topic === conv.topic
                       ? 'bg-white/20 text-white'
                       : 'bg-white/5 text-white/80 hover:bg-white/10'
                   }`}
