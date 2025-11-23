@@ -84,6 +84,9 @@ export function BettingPanel({
         functionName: 'placeBet',
         args: [prediction],
         value: parseEther(betAmount),
+        // Set gas limit to avoid "transaction gas limit too high" error
+        // The network cap is 16,777,216, so we set a reasonable limit well below that
+        gas: BigInt(1000000), // 1M gas should be more than enough for this operation
       });
     } catch (err) {
       console.error('Error placing bet:', err);

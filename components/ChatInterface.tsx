@@ -1,11 +1,6 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import {
-  useConversations,
-  useMessages,
-  useStartConversation,
-} from '@xmtp/react-sdk';
 import { useAccount } from 'wagmi';
 import {
   Send,
@@ -23,12 +18,6 @@ interface ChatInterfaceProps {
   initClient: () => Promise<void>;
 }
 
-// Placeholder conversation to prevent hook errors when none is selected
-const PLACEHOLDER_CONVERSATION = {
-  topic: '__placeholder__',
-  peerAddress: '0x0000000000000000000000000000000000000000',
-} as any;
-
 export function ChatInterface({
   client,
   initClient,
@@ -40,32 +29,76 @@ export function ChatInterface({
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [newChatAddress, setNewChatAddress] = useState('');
   const [isCreatingChat, setIsCreatingChat] = useState(false);
+  const [conversations, setConversations] = useState<any[]>([]);
+  const [conversationsLoading, setConversationsLoading] =
+    useState(false);
+  const [messages, setMessages] = useState<any[]>([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initAttemptedRef = useRef(false);
+  const messageStreamRef = useRef<AsyncIterable<any> | null>(null);
 
-  const { conversations, isLoading: conversationsLoading } =
-    useConversations();
+  // Load conversations from Browser SDK
+  useEffect(() => {
+    if (!client) return;
 
-  // Hook for starting new conversations (React SDK)
-  const { startConversation, isLoading: isStartingConversation } =
-    useStartConversation();
+    const loadConversations = async () => {
+      setConversationsLoading(true);
+      try {
+        // Browser SDK: Get all conversations
+        const allConversations = await client.conversations.list();
+        setConversations(allConversations || []);
+      } catch (error) {
+        console.error('Error loading conversations:', error);
+      } finally {
+        setConversationsLoading(false);
+      }
+    };
 
-  // useMessages hook - must be called unconditionally per React rules
-  // Use placeholder if no conversation is selected to prevent hook from crashing
-  const conversationForHook =
-    selectedConversation || PLACEHOLDER_CONVERSATION;
-  const messagesHook = useMessages(conversationForHook);
+    loadConversations();
+  }, [client]);
 
-  // Only use messages if a real conversation is selected
-  const messages = selectedConversation
-    ? messagesHook?.messages || []
-    : [];
-  const sendMessageFn = selectedConversation
-    ? messagesHook?.sendMessage
-    : null;
-  const messagesLoading = selectedConversation
-    ? messagesHook?.isLoading || false
-    : false;
+  // Load messages when conversation is selected
+  useEffect(() => {
+    if (!client || !selectedConversation) {
+      setMessages([]);
+      return;
+    }
+
+    const loadMessages = async () => {
+      setMessagesLoading(true);
+      try {
+        // Browser SDK: Stream messages from conversation
+        // Clear previous stream
+        if (messageStreamRef.current) {
+          messageStreamRef.current = null;
+        }
+
+        // Get messages using Browser SDK
+        const messageStream = selectedConversation.streamMessages();
+        messageStreamRef.current = messageStream;
+
+        const loadedMessages: any[] = [];
+        for await (const message of messageStream) {
+          loadedMessages.push(message);
+          // Update messages as they come in
+          setMessages([...loadedMessages]);
+        }
+      } catch (error) {
+        console.error('Error loading messages:', error);
+        setMessages([]);
+      } finally {
+        setMessagesLoading(false);
+      }
+    };
+
+    loadMessages();
+
+    // Cleanup: stop message stream when conversation changes
+    return () => {
+      messageStreamRef.current = null;
+    };
+  }, [client, selectedConversation]);
 
   // Initialize XMTP client only once when wallet is connected
   useEffect(() => {
@@ -86,23 +119,25 @@ export function ChatInterface({
     if (!messageText.trim() || !selectedConversation) return;
 
     try {
-      // Try using the sendMessage function from the hook
-      if (sendMessageFn && typeof sendMessageFn === 'function') {
-        await sendMessageFn(messageText);
-        setMessageText('');
-      } else if (
-        selectedConversation &&
-        typeof selectedConversation.send === 'function'
-      ) {
-        // Fallback: try using the conversation's send method directly
+      // Browser SDK conversations have a send method directly
+      // According to docs: conversation.send(message)
+      // https://docs.xmtp.org/chat-apps/sdks/browser/send-messages
+      if (typeof selectedConversation.send === 'function') {
         await selectedConversation.send(messageText);
         setMessageText('');
+        // The message stream should update automatically
       } else {
-        console.error('No valid send method found:', {
-          sendMessageFn,
+        console.error('Conversation does not have send method:', {
           selectedConversation,
+          hasSend: 'send' in selectedConversation,
+          sendType: typeof selectedConversation.send,
+          methods: Object.getOwnPropertyNames(
+            Object.getPrototypeOf(selectedConversation)
+          ),
         });
-        alert('Unable to send message. Please try again.');
+        alert(
+          'Unable to send message. The conversation object does not have a send method.'
+        );
       }
     } catch (error) {
       console.error('Error sending message:', error);
@@ -115,13 +150,7 @@ export function ChatInterface({
   };
 
   const handleCreateDM = async () => {
-    if (
-      !client ||
-      !newChatAddress.trim() ||
-      isCreatingChat ||
-      isStartingConversation
-    )
-      return;
+    if (!client || !newChatAddress.trim() || isCreatingChat) return;
 
     // Basic address validation
     if (!/^0x[a-fA-F0-9]{40}$/.test(newChatAddress.trim())) {
@@ -131,21 +160,64 @@ export function ChatInterface({
 
     setIsCreatingChat(true);
     try {
-      // Use React SDK's startConversation hook
-      if (!startConversation) {
-        throw new Error('startConversation function not available');
-      }
+      // Use Browser SDK's newDmByIdentifier method (from docs)
+      // https://docs.xmtp.org/chat-apps/sdks/browser/create-conversations
+      if (client && client.conversations) {
+        const identifier = {
+          identifier: newChatAddress.trim().toLowerCase(),
+          identifierKind: 'Ethereum' as const,
+        };
 
-      const conversation = await startConversation(
-        newChatAddress.trim()
-      );
+        // Check if identity is reachable (optional check - show warning but allow proceeding)
+        // According to docs, canMessage is a helper to check reachability, but not required
+        let canMessage = true;
+        try {
+          const canMessageResult = await (
+            client.constructor as any
+          ).canMessage([identifier]);
+          // canMessage returns a Map<string, boolean>
+          canMessage =
+            canMessageResult?.get?.(
+              newChatAddress.trim().toLowerCase()
+            ) ??
+            canMessageResult?.[newChatAddress.trim().toLowerCase()] ??
+            true; // Default to true if check fails
+        } catch (error) {
+          // If canMessage check fails, continue anyway
+          console.warn(
+            'canMessage check failed, proceeding anyway:',
+            error
+          );
+        }
 
-      if (conversation) {
-        setSelectedConversation(conversation);
-        setShowNewChatModal(false);
-        setNewChatAddress('');
+        // Show warning if not reachable, but allow user to proceed
+        if (!canMessage) {
+          const proceed = confirm(
+            `Warning: This address (${newChatAddress.trim()}) may not be reachable on XMTP. They may need to enable XMTP first.\n\nWould you like to try creating the conversation anyway?`
+          );
+          if (!proceed) {
+            return;
+          }
+        }
+
+        // Create DM using Browser SDK's newDmByIdentifier
+        // This will fail naturally if the address is truly unreachable
+        const conversation =
+          await client.conversations.newDmByIdentifier(identifier);
+
+        if (conversation) {
+          setSelectedConversation(conversation);
+          setShowNewChatModal(false);
+          setNewChatAddress('');
+          console.log('DM created:', conversation);
+          // Reload conversations list to include the new one
+          const allConversations = await client.conversations.list();
+          setConversations(allConversations || []);
+        } else {
+          throw new Error('Failed to create conversation');
+        }
       } else {
-        throw new Error('Failed to create conversation');
+        throw new Error('Client conversations API not available');
       }
     } catch (error) {
       console.error('Error creating conversation:', error);
@@ -177,40 +249,84 @@ export function ChatInterface({
 
     setIsCreatingChat(true);
     try {
-      // Try to use Browser SDK client directly for group creation
-      // Groups might need to be created via the Browser SDK
-      if (
-        client &&
-        typeof (client as any).conversations?.newGroup === 'function'
-      ) {
-        const group = await (client as any).conversations.newGroup(
-          addresses
-        );
-        setSelectedConversation(group);
-        setShowNewChatModal(false);
-        setNewChatAddress('');
-      } else {
-        // Fallback: For now, create individual conversations
-        // In a full implementation, you'd use the Browser SDK's group API
-        alert(
-          'Group creation requires Browser SDK. Creating individual conversations for now. Please use the Browser SDK client directly for groups.'
-        );
-        // You could create the first conversation as a workaround
-        if (startConversation && addresses.length > 0) {
-          const firstConv = await startConversation(addresses[0]);
-          if (firstConv) {
-            setSelectedConversation(firstConv);
-            setShowNewChatModal(false);
-            setNewChatAddress('');
+      // Use Browser SDK's group creation (from docs)
+      // https://docs.xmtp.org/chat-apps/sdks/browser/create-conversations
+      if (client && client.conversations) {
+        // Step 1: Create identifiers array
+        const identifiers = addresses.map((addr) => ({
+          identifier: addr.toLowerCase(),
+          identifierKind: 'Ethereum' as const,
+        }));
+
+        // Step 2: Check if all identities are reachable (optional - show warning but allow proceeding)
+        let unreachableAddresses: string[] = [];
+        try {
+          const canMessageResult = await (
+            client.constructor as any
+          ).canMessage(identifiers);
+
+          identifiers.forEach((id) => {
+            const canMessage =
+              canMessageResult?.get?.(id.identifier) ??
+              canMessageResult?.[id.identifier] ??
+              false;
+            if (!canMessage) {
+              unreachableAddresses.push(id.identifier);
+            }
+          });
+        } catch (error) {
+          // If canMessage check fails, continue anyway
+          console.warn(
+            'canMessage check failed, proceeding anyway:',
+            error
+          );
+        }
+
+        // Show warning if some addresses are not reachable, but allow user to proceed
+        if (unreachableAddresses.length > 0) {
+          const proceed = confirm(
+            `Warning: The following addresses may not be reachable on XMTP: ${unreachableAddresses.join(
+              ', '
+            )}. They may need to enable XMTP first.\n\nWould you like to try creating the group anyway?`
+          );
+          if (!proceed) {
+            return;
           }
         }
+
+        // Step 3: Get inbox IDs from addresses
+        // According to docs: client.findInboxIdByIdentities()
+        const inboxIds = await (
+          client as any
+        ).findInboxIdByIdentities(identifiers);
+
+        if (!inboxIds || inboxIds.length === 0) {
+          throw new Error('Failed to get inbox IDs for addresses');
+        }
+
+        // Step 4: Create group chat with inbox IDs
+        const group = await client.conversations.newGroup(inboxIds);
+
+        if (group) {
+          setSelectedConversation(group);
+          setShowNewChatModal(false);
+          setNewChatAddress('');
+          console.log('Group created:', group);
+          // Reload conversations list to include the new group
+          const allConversations = await client.conversations.list();
+          setConversations(allConversations || []);
+        } else {
+          throw new Error('Failed to create group');
+        }
+      } else {
+        throw new Error('Client conversations API not available');
       }
     } catch (error) {
       console.error('Error creating group:', error);
       alert(
-        `Failed to create group: ${
+        `Failed to create conversation: ${
           error instanceof Error ? error.message : 'Unknown error'
-        }. Make sure all addresses have XMTP enabled.`
+        }. Make sure the address has XMTP enabled.`
       );
     } finally {
       setIsCreatingChat(false);
@@ -256,23 +372,62 @@ export function ChatInterface({
             </div>
           ) : (
             <div className="space-y-2 flex-1 overflow-y-auto">
-              {conversations.map((conv) => (
-                <button
-                  key={conv.topic}
-                  onClick={() => setSelectedConversation(conv)}
-                  className={`w-full text-left p-3 rounded-lg transition-all ${
-                    selectedConversation &&
-                    selectedConversation.topic === conv.topic
-                      ? 'bg-white/20 text-white'
-                      : 'bg-white/5 text-white/80 hover:bg-white/10'
-                  }`}
-                >
-                  <div className="text-sm font-medium truncate">
-                    {conv.peerAddress?.slice(0, 6)}...
-                    {conv.peerAddress?.slice(-4)}
-                  </div>
-                </button>
-              ))}
+              {conversations.map((conv) => {
+                // Browser SDK conversations should have the send method directly
+                // Check if it's a group chat (has groupId or is a Group type)
+                const isGroup =
+                  conv?.groupId !== undefined ||
+                  conv?.kind === 'group' ||
+                  'groupId' in (conv || {}) ||
+                  conv?.constructor?.name === 'Group';
+
+                // Get display name for group or DM
+                let displayName = '';
+                let topic = conv?.topic;
+
+                if (isGroup) {
+                  displayName =
+                    conv?.groupName ||
+                    `Group (${conv?.memberCount || '?'} members)` ||
+                    'Group Chat';
+                } else {
+                  // For DMs, get peer address
+                  const peerAddress =
+                    conv?.peerAddress ||
+                    conv?.peerIdentifier?.identifier;
+                  displayName = peerAddress
+                    ? `${peerAddress.slice(
+                        0,
+                        6
+                      )}...${peerAddress.slice(-4)}`
+                    : 'Unknown';
+                }
+
+                return (
+                  <button
+                    key={topic || `conv-${Math.random()}`}
+                    onClick={() => {
+                      // Browser SDK conversation objects should have send method
+                      setSelectedConversation(conv);
+                    }}
+                    className={`w-full text-left p-3 rounded-lg transition-all ${
+                      selectedConversation &&
+                      selectedConversation.topic === topic
+                        ? 'bg-white/20 text-white'
+                        : 'bg-white/5 text-white/80 hover:bg-white/10'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      {isGroup && (
+                        <Users className="w-4 h-4 text-purple-400" />
+                      )}
+                      <div className="text-sm font-medium truncate">
+                        {displayName}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
